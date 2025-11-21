@@ -1,0 +1,116 @@
+
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpServer;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.*;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+
+/**
+ * API Gateway simples:
+ * - Exponde /set e /get em HTTP (porta 8080)
+ * - Encaminha as requisições para um nó líder HTTP (por enquanto fixo)
+ *
+ * Futuro:
+ * - ServiceRegistry
+ * - Heartbeat
+ * - Múltiplos nós e load balancing
+ * - TCP e UDP
+ */
+public class ApiGatewayApplication {
+
+    // Por enquanto, endereço fixo do "líder"
+    private static String leaderBaseUrl = "http://localhost:5000";
+
+    private static final HttpClient httpClient = HttpClient.newHttpClient();
+
+    public static void main(String[] args) throws Exception {
+        int port = 8080;
+
+        // Permite configurar porta e URL do líder via args
+        for (String arg : args) {
+            if (arg.startsWith("--port=")) {
+                port = Integer.parseInt(arg.substring("--port=".length()));
+            } else if (arg.startsWith("--leaderUrl=")) {
+                leaderBaseUrl = arg.substring("--leaderUrl=".length());
+            }
+        }
+
+        HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+        System.out.println("API Gateway HTTP on port " + port);
+        System.out.println("Forwarding to leader node at " + leaderBaseUrl);
+
+        server.createContext("/set", new SetProxyHandler());
+        server.createContext("/get", new GetProxyHandler());
+
+        server.setExecutor(null);
+        server.start();
+    }
+
+    // Handler para /set no Gateway
+    static class SetProxyHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            // Simplesmente repassa a query string para o nó líder
+            String query = exchange.getRequestURI().getRawQuery();
+            String targetUrl = leaderBaseUrl + "/set";
+            if (query != null && !query.isEmpty()) {
+                targetUrl += "?" + query;
+            }
+
+            try {
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(targetUrl))
+                        .GET()
+                        .build();
+
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+                copyResponse(exchange, response.statusCode(), response.body());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                copyResponse(exchange, 500, "Interrupted: " + e.getMessage());
+            } catch (Exception e) {
+                copyResponse(exchange, 502, "Error forwarding to leader: " + e.getMessage());
+            }
+        }
+    }
+
+    // Handler para /get no Gateway
+    static class GetProxyHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String query = exchange.getRequestURI().getRawQuery();
+            String targetUrl = leaderBaseUrl + "/get";
+            if (query != null && !query.isEmpty()) {
+                targetUrl += "?" + query;
+            }
+
+            try {
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(targetUrl))
+                        .GET()
+                        .build();
+
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+                copyResponse(exchange, response.statusCode(), response.body());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                copyResponse(exchange, 500, "Interrupted: " + e.getMessage());
+            } catch (Exception e) {
+                copyResponse(exchange, 502, "Error forwarding to leader: " + e.getMessage());
+            }
+        }
+    }
+
+    // Copia resposta do nó para o cliente
+    private static void copyResponse(HttpExchange exchange, int statusCode, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getRespo
