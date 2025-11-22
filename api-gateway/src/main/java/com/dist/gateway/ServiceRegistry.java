@@ -137,6 +137,26 @@ public static NodeInfo getLeaderAtivo() {
         return true;
     }
 
+    public static void verificarTodosOsNos() {
+    long agora = System.currentTimeMillis();
+
+    for (NodeInfo info : registry.values()) {
+        long delta = agora - info.lastHeartbeatMillis;
+
+        boolean estavaAtivo = info.ativo;
+        boolean estaAtivo = delta <= HEARTBEAT_TIMEOUT_MS;
+
+        info.ativo = estaAtivo;
+
+        if (estavaAtivo && !estaAtivo) {
+            System.out.println("[Gateway] Nó " + info.id + " ficou INATIVO (sem heartbeat)");
+        } else if (!estavaAtivo && estaAtivo) {
+            System.out.println("[Gateway] Nó " + info.id + " voltou a ficar ATIVO");
+        }
+    }
+}
+
+
     public static class NodeInfo {
         public final String id;
         public final String ip;

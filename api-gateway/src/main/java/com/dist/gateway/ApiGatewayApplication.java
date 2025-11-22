@@ -50,6 +50,12 @@ public class ApiGatewayApplication {
 
         server.setExecutor(null);
         server.start();
+
+        Thread monitor = new Thread(new RegistryMonitor());
+monitor.setDaemon(true);
+monitor.start();
+System.out.println("[Gateway] Monitor de nós iniciado.");
+
     }
 
     // Handler para /set
@@ -171,7 +177,22 @@ System.out.println("[Gateway] Encaminhando GET para nó " + node.id +
             }
         }
     }
-    
+
+static class RegistryMonitor implements Runnable {
+    @Override
+    public void run() {
+        while (true) {
+            try {
+                ServiceRegistry.verificarTodosOsNos();
+                Thread.sleep(2000); // verifica a cada 2 segundos
+            } catch (InterruptedException e) {
+                return;
+            }
+        }
+    }
+}
+
+
 static class StatusHandler implements HttpHandler {
     @Override
     public void handle(HttpExchange exchange) throws IOException {
