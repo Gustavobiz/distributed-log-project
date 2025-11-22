@@ -1,0 +1,98 @@
+package com.dist.gateway;
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * Registro de nós (Leader / Followers) no Gateway.
+ * Controla:
+ *  - registro inicial (REGISTER)
+ *  - heartbeat
+ *  - nós ativos / inativos
+ */
+public class ServiceRegistry {
+
+    private static final Map<String, NodeInfo> registry = new ConcurrentHashMap<>();
+
+    // Tempo máximo sem heartbeat antes de considerar o nó morto (ms)
+    private static final long HEARTBEAT_TIMEOUT_MS = 5000;
+
+    public static void registerNode(String id, String ip, int port, String role) {
+        NodeInfo info = new NodeInfo(id, ip, port, role);
+        registry.put(id, info);
+
+        System.out.println("[Gateway] Registro recebido: nó " + id +
+                " (" + ip + ":" + port + "), papel=" + role);
+    }
+
+    public static void updateHeartbeat(String id) {
+        NodeInfo info = registry.get(id);
+        if (info == null) {
+            System.out.println("[Gateway] Heartbeat de nó desconhecido: " + id);
+            return;
+        }
+
+        info.lastHeartbeatMillis = System.currentTimeMillis();
+        if (!info.ativo) {
+            System.out.println("[Gateway] Nó " + id + " voltou a ficar ATIVO");
+        }
+        info.ativo = true;
+        // Se quiser logar todo heartbeat, descomente:
+        // System.out.println("[Gateway] Heartbeat recebido do nó " + id);
+    }
+
+    // Retorna um líder que esteja ativo (com heartbeat recente)
+    public static NodeInfo getLeaderAtivo() {
+        return registry.values()
+                .stream()
+                .filter(info -> "LEADER".equalsIgnoreCase(info.role))
+                .filter(ServiceRegistry::isAlive)
+                .findFirst()
+                .orElse(null);
+    }
+
+    // Por enquanto GET também vai para o líder.
+    // Depois podemos mandar para followers.
+    public static NodeInfo getNodeParaGet() {
+        return getLeaderAtivo();
+    }
+
+    private static boolean isAlive(NodeInfo info) {
+        long agora = System.currentTimeMillis();
+        long delta = agora - info.lastHeartbeatMillis;
+
+        if (delta > HEARTBEAT_TIMEOUT_MS) {
+            if (info.ativo) {
+                info.ativo = false;
+                System.out.println("[Gateway] Nó " + info.id + " ficou INATIVO (sem heartbeat)");
+            }
+            return false;
+        }
+
+        info.ativo = true;
+        return true;
+    }
+
+    public static class NodeInfo {
+        public final String id;
+        public final String ip;
+        public final int port;
+        public final String role;
+
+        public volatile long lastHeartbeatMillis;
+        public volatile boolean ativo;
+
+        public NodeInfo(String id, String ip, int port, String role) {
+            this.id = id;
+            this.ip = ip;
+            this.port = port;
+            this.role = role;
+            this.lastHeartbeatMillis = System.currentTimeMillis();
+            this.ativo = true;
+        }
+
+        public String baseUrl() {
+            return "http://" + ip + ":" + port;
+        }
+    }
+}

@@ -14,40 +14,34 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 
 /**
- * API Gateway simples:
- * - Escuta HTTP na porta 8080
- * - Exponde /set e /get
- * - Encaminha as requisições para um nó líder HTTP (por enquanto fixo)
- *
- * Depois vamos:
- *  - adicionar ServiceRegistry
- *  - heartbeat via UDP
- *  - suporte a TCP/UDP
- *  - vários nós (leader/followers)
+ * API Gateway:
+ *  - HTTP na porta 8080 (/set e /get)
+ *  - UDP na porta 8000 (REGISTER + HEARTBEAT)
  */
 public class ApiGatewayApplication {
 
-    // URL base do nó líder (por enquanto fixa, depois vamos usar ServiceRegistry)
-    private static String leaderBaseUrl = "http://localhost:5000";
-
-    // Cliente HTTP para encaminhar as requisições
     private static final HttpClient httpClient = HttpClient.newHttpClient();
 
     public static void main(String[] args) throws Exception {
-        int port = 8080;
+        int httpPort = 8080;
+        int udpPort = 8000;
 
-        // Permite configurar porta e URL do líder via argumentos
         for (String arg : args) {
             if (arg.startsWith("--port=")) {
-                port = Integer.parseInt(arg.substring("--port=".length()));
-            } else if (arg.startsWith("--leaderUrl=")) {
-                leaderBaseUrl = arg.substring("--leaderUrl=".length());
+                httpPort = Integer.parseInt(arg.substring("--port=".length()));
+            } else if (arg.startsWith("--udpPort=")) {
+                udpPort = Integer.parseInt(arg.substring("--udpPort=".length()));
             }
         }
 
-        HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
-        System.out.println("API Gateway HTTP running on port " + port);
-        System.out.println("Forwarding to leader node at " + leaderBaseUrl);
+        // Inicia o servidor UDP para REGISTER + HEARTBEAT
+        Thread udpThread = new Thread(new UDPRegisterServer(udpPort));
+        udpThread.setDaemon(true);
+        udpThread.start();
+
+        // Inicia servidor HTTP
+        HttpServer server = HttpServer.create(new InetSocketAddress(httpPort), 0);
+        System.out.println("[Gateway] Servidor HTTP iniciado na porta " + httpPort);
 
         server.createContext("/set", new SetProxyHandler());
         server.createContext("/get", new GetProxyHandler());
@@ -56,12 +50,23 @@ public class ApiGatewayApplication {
         server.start();
     }
 
-    // Handler para /set no Gateway
+    // Handler para /set
     static class SetProxyHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+            ServiceRegistry.NodeInfo leader = ServiceRegistry.getLeaderAtivo();
+            if (leader == null) {
+                send(exchange, 503,
+                        "Nenhum nó LEADER ativo encontrado. " +
+                        "Verifique se o nó está rodando e enviando heartbeat.");
+                return;
+            }
+            System.out.println("[Gateway] Encaminhando SET para líder " + leader.id +
+        " (" + leader.baseUrl() + ")");
+
+
             String query = exchange.getRequestURI().getRawQuery();
-            String targetUrl = leaderBaseUrl + "/set";
+            String targetUrl = leader.baseUrl() + "/set";
             if (query != null && !query.isEmpty()) {
                 targetUrl += "?" + query;
             }
@@ -78,19 +83,30 @@ public class ApiGatewayApplication {
                 send(exchange, response.statusCode(), response.body());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                send(exchange, 500, "Interrupted: " + e.getMessage());
+                send(exchange, 500, "Erro: Thread interrompida (" + e.getMessage() + ")");
             } catch (Exception e) {
-                send(exchange, 502, "Error forwarding to leader: " + e.getMessage());
+                send(exchange, 502, "Erro ao encaminhar para o líder: " + e.getMessage());
             }
         }
     }
 
-    // Handler para /get no Gateway
+    // Handler para /get
     static class GetProxyHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+            ServiceRegistry.NodeInfo node = ServiceRegistry.getNodeParaGet();
+
+            if (node == null) {
+                send(exchange, 503,
+                        "Nenhum nó disponível para GET. " +
+                        "Verifique se há nós ativos enviando heartbeat.");
+                return;
+            }
+System.out.println("[Gateway] Encaminhando GET para nó " + node.id +
+        " (" + node.baseUrl() + ")");
+
             String query = exchange.getRequestURI().getRawQuery();
-            String targetUrl = leaderBaseUrl + "/get";
+            String targetUrl = node.baseUrl() + "/get";
             if (query != null && !query.isEmpty()) {
                 targetUrl += "?" + query;
             }
@@ -107,14 +123,13 @@ public class ApiGatewayApplication {
                 send(exchange, response.statusCode(), response.body());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                send(exchange, 500, "Interrupted: " + e.getMessage());
+                send(exchange, 500, "Erro: Thread interrompida (" + e.getMessage() + ")");
             } catch (Exception e) {
-                send(exchange, 502, "Error forwarding to leader: " + e.getMessage());
+                send(exchange, 502, "Erro ao encaminhar para o nó: " + e.getMessage());
             }
         }
     }
 
-    // Envia resposta pro cliente
     private static void send(HttpExchange exchange, int statusCode, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
