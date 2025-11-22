@@ -46,6 +46,7 @@ public class ApiGatewayApplication {
 
         server.createContext("/set", new SetProxyHandler());
         server.createContext("/get", new GetProxyHandler());
+        server.createContext("/status", new StatusHandler());
 
         server.setExecutor(null);
         server.start();
@@ -170,6 +171,32 @@ System.out.println("[Gateway] Encaminhando GET para nó " + node.id +
             }
         }
     }
+    
+static class StatusHandler implements HttpHandler {
+    @Override
+    public void handle(HttpExchange exchange) throws IOException {
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("===== STATUS DO CLUSTER =====\n");
+
+        for (ServiceRegistry.NodeInfo info : ServiceRegistry.getTodosOsNos()) {
+
+            sb.append("\nNó ").append(info.id).append(":\n");
+            sb.append("  Papel: ").append(info.role).append("\n");
+            sb.append("  Endereço: ").append(info.baseUrl()).append("\n");
+            sb.append("  Ativo: ").append(info.ativo ? "SIM" : "NÃO").append("\n");
+            sb.append("  Último heartbeat: ").append(info.lastHeartbeatMillis).append("\n");
+        }
+
+        byte[] bytes = sb.toString().getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+        exchange.sendResponseHeaders(200, bytes.length);
+
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(bytes);
+        }
+    }
+}
 
     private static void send(HttpExchange exchange, int statusCode, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);

@@ -47,14 +47,20 @@ public class ServiceRegistry {
     }
 
     // Retorna um líder que esteja ativo (com heartbeat recente)
-    public static NodeInfo getLeaderAtivo() {
-        return registry.values()
-                .stream()
-                .filter(info -> "LEADER".equalsIgnoreCase(info.role))
-                .filter(ServiceRegistry::isAlive)
-                .findFirst()
-                .orElse(null);
+public static NodeInfo getLeaderAtivo() {
+    // Primeiro procura um líder ativo
+    for (NodeInfo info : registry.values()) {
+        if ("LEADER".equalsIgnoreCase(info.role) && isAlive(info)) {
+            return info;
+        }
     }
+
+    // Se não achar, inicia eleição
+    System.out.println("[Gateway] Líder INATIVO! Iniciando eleição...");
+
+    return promoverFollowerParaLeader();
+}
+
 
     // Followers ativos (para replicação mínima do SET)
     public static List<NodeInfo> getFollowersAtivos() {
@@ -66,6 +72,27 @@ public class ServiceRegistry {
         }
         return followers;
     }
+
+    public static NodeInfo promoverFollowerParaLeader() {
+    // Pega qualquer follower ativo
+    List<NodeInfo> followers = getFollowersAtivos();
+
+    if (followers.isEmpty()) {
+        System.out.println("[Gateway] Nenhum follower disponível para promover a líder.");
+        return null;
+    }
+
+    NodeInfo novoLeader = followers.get(0);
+
+    // Atualiza papel no registry
+    novoLeader.role = "LEADER";
+
+    System.out.println("[Gateway] Eleição concluída! Novo líder eleito: " + novoLeader.id +
+            " (" + novoLeader.baseUrl() + ")");
+
+    return novoLeader;
+}
+
 
     // Lista de nós ativos para GET (líder + followers)
     public static List<NodeInfo> getNosAtivosParaGet() {
@@ -87,6 +114,11 @@ public class ServiceRegistry {
         int idx = Math.floorMod(rrIndex.getAndIncrement(), ativos.size());
         return ativos.get(idx);
     }
+     //listar nos
+    public static List<NodeInfo> getTodosOsNos() {
+    return new ArrayList<>(registry.values());
+}
+
 
     // Verifica se nó está "vivo" e atualiza flag ativo
     private static boolean isAlive(NodeInfo info) {
@@ -109,7 +141,7 @@ public class ServiceRegistry {
         public final String id;
         public final String ip;
         public final int port;
-        public final String role;
+        public String role;
 
         public volatile long lastHeartbeatMillis;
         public volatile boolean ativo;
