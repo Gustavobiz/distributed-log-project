@@ -142,7 +142,6 @@ public class ReplicaNodeApplication {
     }
 
     // --------- HANDLERS HTTP ---------
-
     static class SetHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
@@ -162,26 +161,21 @@ public class ReplicaNodeApplication {
                 return;
             }
 
-            // Só o líder deve aceitar SET diretamente
-            if (!"LEADER".equalsIgnoreCase(ROLE)) {
-                send(exchange, 403,
-                        "[Nó " + NODE_ID + "] Não sou LÍDER. SET deve ser enviado ao líder atual.");
-                return;
-            }
+            System.out.println("[Nó " + NODE_ID + "] Recebeu SET key=" + key + " value=" + value);
 
-            // Lógica de líder: adiciona ao log e inicia replicação
             try {
                 LogEntry entry = appendToLocalLog(key, value);
-                applyEntry(entry);            // aplica no estado local
-                replicateEntryViaGateway(entry); // pede ao Gateway para replicar nos followers
+                applyEntry(entry);
+                replicateEntryViaGateway(entry);
 
                 send(exchange, 200, "OK (log index=" + entry.index + ")");
-
             } catch (Exception e) {
+                e.printStackTrace();
                 send(exchange, 500, "Erro ao processar SET com Log Replicado: " + e.getMessage());
             }
         }
     }
+
 
 
     static class GetHandler implements HttpHandler {
@@ -266,8 +260,6 @@ public class ReplicaNodeApplication {
     }
 
     private static void applyEntry(LogEntry entry) {
-        // aqui estamos aplicando imediatamente; em uma implementação mais rigorosa
-        // consideraríamos ordem e majority-commit
         STATE.put(entry.key, entry.value);
         lastAppliedIndex = entry.index;
         System.out.println("[Nó " + NODE_ID + "] Estado aplicado: " +
@@ -275,21 +267,19 @@ public class ReplicaNodeApplication {
     }
 
     private static void replicateEntryViaGateway(LogEntry entry) throws Exception {
-        // O líder não fala direto com followers.
-        // Ele apenas notifica o Gateway, que fará o fan-out para os followers.
         String url = GATEWAY_BASE_URL
                 + "/append?index=" + entry.index
                 + "&key=" + URLEncoder.encode(entry.key, StandardCharsets.UTF_8)
                 + "&value=" + URLEncoder.encode(entry.value, StandardCharsets.UTF_8);
 
-        java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
-        java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+        HttpClient client = HttpClient.newHttpClient();
+        HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .GET()
                 .build();
 
-        java.net.http.HttpResponse<String> response =
-                client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response =
+                client.send(request, HttpResponse.BodyHandlers.ofString());
 
         System.out.println("[Nó " + NODE_ID + "] replicateEntryViaGateway -> " +
                 "status=" + response.statusCode() +

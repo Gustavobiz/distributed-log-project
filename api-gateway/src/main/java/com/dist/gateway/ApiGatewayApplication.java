@@ -13,6 +13,13 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.Executors;
+
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.List;
+
 
 /**
  * API Gateway:
@@ -53,7 +60,7 @@ public class ApiGatewayApplication {
 server.createContext("/append", new AppendProxyHandler());
 
 
-        server.setExecutor(null);
+        server.setExecutor(Executors.newCachedThreadPool());
         server.start();
 
         Thread monitor = new Thread(new RegistryMonitor());
@@ -211,8 +218,7 @@ static class StatusHandler implements HttpHandler {
                 return;
             }
 
-            // Não precisamos parsear aqui; só repassamos a query igual
-            List<ServiceRegistry.NodeInfo> followers = ServiceRegistry.getFollowersAtivos();
+            java.util.List<ServiceRegistry.NodeInfo> followers = ServiceRegistry.getFollowersAtivos();
             int sucesso = 0;
             int falha = 0;
 

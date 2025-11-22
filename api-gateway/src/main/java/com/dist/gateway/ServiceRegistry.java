@@ -18,7 +18,7 @@ public class ServiceRegistry {
     private static final Map<String, NodeInfo> registry = new ConcurrentHashMap<>();
 
     // Tempo máximo sem heartbeat antes de considerar o nó morto (ms)
-    private static final long HEARTBEAT_TIMEOUT_MS = 5000;
+    private static final long HEARTBEAT_TIMEOUT_MS = 20000;
 
     // Índice para round-robin de GET
     private static final AtomicInteger rrIndex = new AtomicInteger(0);
