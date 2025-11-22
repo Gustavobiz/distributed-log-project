@@ -8,11 +8,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Registro de nós (Leader / Followers) no Gateway.
- * Controla:
- *  - registro inicial (REGISTER)
- *  - heartbeat
- *  - nós ativos / inativos
- *  - escolha de nó para GET (round-robin)
+ * Agora:
+ *  - mantém apenas 1 líder por vez (currentLeaderId)
+ *  - faz eleição automática
+ *  - demove líderes antigos para FOLLOWER quando necessário
  */
 public class ServiceRegistry {
 
@@ -24,12 +23,26 @@ public class ServiceRegistry {
     // Índice para round-robin de GET
     private static final AtomicInteger rrIndex = new AtomicInteger(0);
 
-    public static void registerNode(String id, String ip, int port, String role) {
-        NodeInfo info = new NodeInfo(id, ip, port, role);
+    // ID do líder atual decidido pelo Gateway
+    private static volatile String currentLeaderId = null;
+
+    public static void registerNode(String id, String ip, int port, String roleHint) {
+        NodeInfo info = new NodeInfo(id, ip, port, roleHint);
         registry.put(id, info);
 
+        // Decisão do papel real é do Gateway
+        if (currentLeaderId == null) {
+            currentLeaderId = id;
+            info.role = "LEADER";
+            System.out.println("[Gateway] Nó " + id + " definido como LÍDER atual.");
+        } else {
+            info.role = "FOLLOWER";
+            System.out.println("[Gateway] Nó " + id + " registrado como FOLLOWER. Líder atual: " + currentLeaderId);
+        }
+
         System.out.println("[Gateway] Registro recebido: nó " + id +
-                " (" + ip + ":" + port + "), papel=" + role);
+                " (" + ip + ":" + port + "), papel recebido=" + roleHint +
+                ", papel efetivo=" + info.role);
     }
 
     public static void updateHeartbeat(String id) {
@@ -40,72 +53,69 @@ public class ServiceRegistry {
         }
 
         info.lastHeartbeatMillis = System.currentTimeMillis();
-        if (!info.ativo) {
-            System.out.println("[Gateway] Nó " + id + " voltou a ficar ATIVO");
-        }
-        info.ativo = true;
+        // Aqui não mexemos em papel, só marcamos vivo (o monitor cuida do resto)
     }
 
-    // Retorna um líder que esteja ativo (com heartbeat recente)
-public static NodeInfo getLeaderAtivo() {
-    // Primeiro procura um líder ativo
-    for (NodeInfo info : registry.values()) {
-        if ("LEADER".equalsIgnoreCase(info.role) && isAlive(info)) {
-            return info;
+    /** Chamada pelo monitor: atualiza ativo/inativo e garante que haja 1 líder ativo. */
+    public static void verificarTodosOsNos() {
+        for (NodeInfo info : registry.values()) {
+            isAlive(info); // atualiza flag ativo e imprime logs de transição
+        }
+        garantirLeaderAtivo();
+    }
+
+    /** Garante que existe um líder ativo; se não tiver, elege um follower. */
+    private static synchronized void garantirLeaderAtivo() {
+        // Se temos um líder atual, e ele existe e está ativo, beleza
+        if (currentLeaderId != null) {
+            NodeInfo leader = registry.get(currentLeaderId);
+            if (leader != null && leader.ativo) {
+                leader.role = "LEADER";
+                return;
+            }
+        }
+
+        // Se chegou aqui, não há líder ativo → tentar eleger
+        NodeInfo novo = promoverFollowerParaLeader();
+        if (novo == null) {
+            currentLeaderId = null;
+        } else {
+            currentLeaderId = novo.id;
         }
     }
 
-    // Se não achar, inicia eleição
-    System.out.println("[Gateway] Líder INATIVO! Iniciando eleição...");
+    /** Usa para /set – sempre devolve o líder ativo, elegendo se necessário. */
+    public static NodeInfo getLeaderAtivo() {
+        garantirLeaderAtivo();
+        if (currentLeaderId == null) return null;
+        NodeInfo leader = registry.get(currentLeaderId);
+        if (leader != null && leader.ativo) return leader;
+        return null;
+    }
 
-    return promoverFollowerParaLeader();
-}
-
-
-    // Followers ativos (para replicação mínima do SET)
+    /** Followers ativos (para replicação mínima do SET). */
     public static List<NodeInfo> getFollowersAtivos() {
         List<NodeInfo> followers = new ArrayList<>();
         for (NodeInfo info : registry.values()) {
-            if (!"LEADER".equalsIgnoreCase(info.role) && isAlive(info)) {
+            if (!"LEADER".equalsIgnoreCase(info.role) && info.ativo) {
                 followers.add(info);
             }
         }
         return followers;
     }
 
-    public static NodeInfo promoverFollowerParaLeader() {
-    // Pega qualquer follower ativo
-    List<NodeInfo> followers = getFollowersAtivos();
-
-    if (followers.isEmpty()) {
-        System.out.println("[Gateway] Nenhum follower disponível para promover a líder.");
-        return null;
-    }
-
-    NodeInfo novoLeader = followers.get(0);
-
-    // Atualiza papel no registry
-    novoLeader.role = "LEADER";
-
-    System.out.println("[Gateway] Eleição concluída! Novo líder eleito: " + novoLeader.id +
-            " (" + novoLeader.baseUrl() + ")");
-
-    return novoLeader;
-}
-
-
-    // Lista de nós ativos para GET (líder + followers)
+    /** Lista de nós ativos para GET (líder + followers). */
     public static List<NodeInfo> getNosAtivosParaGet() {
         List<NodeInfo> ativos = new ArrayList<>();
         for (NodeInfo info : registry.values()) {
-            if (isAlive(info)) {
+            if (info.ativo) {
                 ativos.add(info);
             }
         }
         return ativos;
     }
 
-    // Escolhe nó para GET em round-robin entre todos os ativos
+    /** Escolhe nó para GET em round-robin entre todos os ativos. */
     public static NodeInfo getNodeParaGet() {
         List<NodeInfo> ativos = getNosAtivosParaGet();
         if (ativos.isEmpty()) {
@@ -114,33 +124,40 @@ public static NodeInfo getLeaderAtivo() {
         int idx = Math.floorMod(rrIndex.getAndIncrement(), ativos.size());
         return ativos.get(idx);
     }
-     //listar nos
-    public static List<NodeInfo> getTodosOsNos() {
-    return new ArrayList<>(registry.values());
-}
 
-
-    // Verifica se nó está "vivo" e atualiza flag ativo
-    private static boolean isAlive(NodeInfo info) {
-        long agora = System.currentTimeMillis();
-        long delta = agora - info.lastHeartbeatMillis;
-
-        if (delta > HEARTBEAT_TIMEOUT_MS) {
-            if (info.ativo) {
-                info.ativo = false;
-                System.out.println("[Gateway] Nó " + info.id + " ficou INATIVO (sem heartbeat)");
-            }
-            return false;
+    /** Elege um novo líder a partir dos nós ativos. */
+    public static NodeInfo promoverFollowerParaLeader() {
+        List<NodeInfo> ativos = getNosAtivosParaGet();
+        if (ativos.isEmpty()) {
+            System.out.println("[Gateway] Nenhum nó disponível para ser LÍDER.");
+            return null;
         }
 
-        info.ativo = true;
-        return true;
+        // Estratégia simples: pega o primeiro nós ativos (poderia ordenar por id)
+        NodeInfo novoLeader = ativos.get(0);
+
+        // Ajusta papéis
+        for (NodeInfo n : registry.values()) {
+            if (n.id.equals(novoLeader.id)) {
+                n.role = "LEADER";
+            } else {
+                n.role = "FOLLOWER";
+            }
+        }
+
+        System.out.println("[Gateway] Eleição concluída! Novo líder eleito: " + novoLeader.id +
+                " (" + novoLeader.baseUrl() + ")");
+        return novoLeader;
     }
 
-    public static void verificarTodosOsNos() {
-    long agora = System.currentTimeMillis();
+    /** Método usado pelo /status. */
+    public static List<NodeInfo> getTodosOsNos() {
+        return new ArrayList<>(registry.values());
+    }
 
-    for (NodeInfo info : registry.values()) {
+    // Verifica se nó está "vivo" com base no tempo do último heartbeat
+    private static boolean isAlive(NodeInfo info) {
+        long agora = System.currentTimeMillis();
         long delta = agora - info.lastHeartbeatMillis;
 
         boolean estavaAtivo = info.ativo;
@@ -153,24 +170,24 @@ public static NodeInfo getLeaderAtivo() {
         } else if (!estavaAtivo && estaAtivo) {
             System.out.println("[Gateway] Nó " + info.id + " voltou a ficar ATIVO");
         }
-    }
-}
 
+        return estaAtivo;
+    }
 
     public static class NodeInfo {
         public final String id;
         public final String ip;
         public final int port;
-        public String role;
+        public String role; // agora pode ser alterado (LEADER/FOLLOWER)
 
         public volatile long lastHeartbeatMillis;
         public volatile boolean ativo;
 
-        public NodeInfo(String id, String ip, int port, String role) {
+        public NodeInfo(String id, String ip, int port, String roleHint) {
             this.id = id;
             this.ip = ip;
             this.port = port;
-            this.role = role;
+            this.role = roleHint; // valor inicial, será ajustado pelo Gateway
             this.lastHeartbeatMillis = System.currentTimeMillis();
             this.ativo = true;
         }
