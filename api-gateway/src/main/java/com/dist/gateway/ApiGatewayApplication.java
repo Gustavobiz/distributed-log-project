@@ -49,6 +49,9 @@ public class ApiGatewayApplication {
         server.createContext("/set", new SetProxyHandler());
         server.createContext("/get", new GetProxyHandler());
         server.createContext("/status", new StatusHandler());
+// endpoint interno para replicar entradas do log
+server.createContext("/append", new AppendProxyHandler());
+
 
         server.setExecutor(null);
         server.start();
@@ -78,7 +81,6 @@ System.out.println("[Gateway] TCP pronto na porta "+ tcpPort);
         @Override
         public void handle(HttpExchange exchange) throws IOException {
 
-            // 1) Descobre o líder ativo
             ServiceRegistry.NodeInfo leader = ServiceRegistry.getLeaderAtivo();
             if (leader == null) {
                 send(exchange, 503,
@@ -97,7 +99,6 @@ System.out.println("[Gateway] TCP pronto na porta "+ tcpPort);
             }
 
             try {
-                // 2) Envia SET ao líder
                 HttpRequest reqLeader = HttpRequest.newBuilder()
                         .uri(URI.create(leaderUrl))
                         .GET()
@@ -106,43 +107,7 @@ System.out.println("[Gateway] TCP pronto na porta "+ tcpPort);
                 HttpResponse<String> leaderResp =
                         httpClient.send(reqLeader, HttpResponse.BodyHandlers.ofString());
 
-                if (leaderResp.statusCode() >= 400) {
-                    send(exchange, leaderResp.statusCode(),
-                            "Falha ao gravar no líder: " + leaderResp.body());
-                    return;
-                }
-
-                // 3) Replicação mínima: tentar enviar a mesma escrita para followers ativos
-                List<ServiceRegistry.NodeInfo> followers = ServiceRegistry.getFollowersAtivos();
-                for (ServiceRegistry.NodeInfo f : followers) {
-
-                    System.out.println("[Gateway] Tentando replicar SET para follower "
-                            + f.id + " (" + f.baseUrl() + ")");
-
-                    try {
-                        String followerUrl = f.baseUrl() + "/set";
-                        if (query != null && !query.isEmpty()) {
-                            followerUrl += "?" + query;
-                        }
-
-                        HttpRequest reqFollower = HttpRequest.newBuilder()
-                                .uri(URI.create(followerUrl))
-                                .GET()
-                                .build();
-
-                        httpClient.send(reqFollower, HttpResponse.BodyHandlers.ofString());
-
-                        System.out.println("[Gateway] Replicação para follower "
-                                + f.id + " concluída (melhor esforço).");
-
-                    } catch (Exception e) {
-                        System.out.println("[Gateway] Falha ao replicar para follower "
-                                + f.id + ": " + e.getMessage());
-                    }
-                }
-
-                // 4) Responde para o cliente usando a resposta do líder
-                send(exchange, 200, leaderResp.body());
+                send(exchange, leaderResp.statusCode(), leaderResp.body());
 
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -152,6 +117,7 @@ System.out.println("[Gateway] TCP pronto na porta "+ tcpPort);
             }
         }
     }
+
 
     // Handler para /get
     static class GetProxyHandler implements HttpHandler {
@@ -233,6 +199,48 @@ static class StatusHandler implements HttpHandler {
         }
     }
 }
+
+    // handler interno: recebe pedido do LÍDER para replicar uma entrada de log
+    static class AppendProxyHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+
+            String query = exchange.getRequestURI().getRawQuery();
+            if (query == null || query.isEmpty()) {
+                send(exchange, 400, "Faltando parâmetros ?index=&key=&value=");
+                return;
+            }
+
+            // Não precisamos parsear aqui; só repassamos a query igual
+            List<ServiceRegistry.NodeInfo> followers = ServiceRegistry.getFollowersAtivos();
+            int sucesso = 0;
+            int falha = 0;
+
+            for (ServiceRegistry.NodeInfo f : followers) {
+                String followerUrl = f.baseUrl() + "/append?" + query;
+                System.out.println("[Gateway] Replicando APPEND para follower "
+                        + f.id + " (" + followerUrl + ")");
+
+                try {
+                    HttpRequest reqFollower = HttpRequest.newBuilder()
+                            .uri(URI.create(followerUrl))
+                            .GET()
+                            .build();
+
+                    httpClient.send(reqFollower, HttpResponse.BodyHandlers.ofString());
+                    sucesso++;
+
+                } catch (Exception e) {
+                    falha++;
+                    System.out.println("[Gateway] Falha ao replicar APPEND para "
+                            + f.id + ": " + e.getMessage());
+                }
+            }
+
+            String body = "APPEND enviado. Followers OK=" + sucesso + ", falhas=" + falha;
+            send(exchange, 200, body);
+        }
+    }
 
     private static void send(HttpExchange exchange, int statusCode, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);

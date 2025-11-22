@@ -11,6 +11,13 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+
 /**
  * Nó de réplica simples (por enquanto, 1 líder).
  * Funcionalidades:
@@ -22,38 +29,69 @@ public class ReplicaNodeApplication {
 
     private static final Map<String, String> STATE = new ConcurrentHashMap<>();
 
+    //  NOVO: log replicado em memória
+    private static final java.util.List<LogEntry> LOG =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+
+    private static int lastAppliedIndex = 0;
+    private static final java.util.concurrent.atomic.AtomicInteger LOG_INDEX_SEQ =
+            new java.util.concurrent.atomic.AtomicInteger(0);
+
+    //  Identidade e papel do nó
+    private static String NODE_ID = "A1";
+    private static String ROLE = "LEADER";
+
+    //  Endereço HTTP do Gateway (para o líder mandar replicar)
+    private static final String GATEWAY_BASE_URL = "http://localhost:8080";
+
     private static final String GATEWAY_HOST = "localhost";
     private static final int GATEWAY_UDP_PORT = 8000;
 
+    // Entrada de log
+    static class LogEntry {
+        final int index;
+        final String key;
+        final String value;
+
+        LogEntry(int index, String key, String value) {
+            this.index = index;
+            this.key = key;
+            this.value = value;
+        }
+    }
     public static void main(String[] args) throws Exception {
         int port = 5000;
-        String nodeId = "A1";
-        String role = "LEADER";
+        NODE_ID = "A1";
+        ROLE = "LEADER";
 
         for (String arg : args) {
             if (arg.startsWith("--port=")) {
                 port = Integer.parseInt(arg.substring("--port=".length()));
             } else if (arg.startsWith("--nodeId=")) {
-                nodeId = arg.substring("--nodeId=".length());
+                NODE_ID = arg.substring("--nodeId=".length());
             } else if (arg.startsWith("--role=")) {
-                role = arg.substring("--role=".length());
+                ROLE = arg.substring("--role=".length());
             }
         }
 
         // Envia registro e inicia heartbeat
-        sendRegister(nodeId, "localhost", port, role);
-        startHeartbeatThread(nodeId);
+        sendRegister(NODE_ID, "localhost", port, ROLE);
+        startHeartbeatThread(NODE_ID);
 
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
-        System.out.println("[Nó " + nodeId + "] Servidor HTTP iniciado na porta " + port +
-                " (papel=" + role + ")");
+        System.out.println("[Nó " + NODE_ID + "] Servidor HTTP iniciado na porta " + port +
+                " (papel=" + ROLE + ")");
 
         server.createContext("/set", new SetHandler());
         server.createContext("/get", new GetHandler());
 
+        //  NOVO: endpoint interno para replicação de log
+        server.createContext("/append", new AppendHandler());
+
         server.setExecutor(null);
         server.start();
     }
+
 
     // --------- REGISTRO E HEARTBEAT ---------
 
@@ -118,18 +156,33 @@ public class ReplicaNodeApplication {
             Map<String, String> params = QueryUtils.parseQuery(query);
             String key = params.get("key");
             String value = params.get("value");
-            System.out.println("[Nó] Recebeu SET: key=" + key + ", value=" + value);
-
 
             if (key == null || value == null) {
                 send(exchange, 400, "Parâmetros 'key' ou 'value' ausentes");
                 return;
             }
 
-            STATE.put(key, value);
-            send(exchange, 200, "OK: set " + key + "=" + value);
+            // Só o líder deve aceitar SET diretamente
+            if (!"LEADER".equalsIgnoreCase(ROLE)) {
+                send(exchange, 403,
+                        "[Nó " + NODE_ID + "] Não sou LÍDER. SET deve ser enviado ao líder atual.");
+                return;
+            }
+
+            // Lógica de líder: adiciona ao log e inicia replicação
+            try {
+                LogEntry entry = appendToLocalLog(key, value);
+                applyEntry(entry);            // aplica no estado local
+                replicateEntryViaGateway(entry); // pede ao Gateway para replicar nos followers
+
+                send(exchange, 200, "OK (log index=" + entry.index + ")");
+
+            } catch (Exception e) {
+                send(exchange, 500, "Erro ao processar SET com Log Replicado: " + e.getMessage());
+            }
         }
     }
+
 
     static class GetHandler implements HttpHandler {
         @Override
@@ -157,6 +210,90 @@ public class ReplicaNodeApplication {
                 send(exchange, 200, value);
             }
         }
+    }
+    // Handler chamado pelo Gateway para entregar entradas de Log aos followers
+    static class AppendHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String query = exchange.getRequestURI().getRawQuery();
+
+            if (query == null) {
+                send(exchange, 400, "Faltando parâmetros ?index=&key=&value=");
+                return;
+            }
+
+            Map<String, String> params = QueryUtils.parseQuery(query);
+            String indexStr = params.get("index");
+            String key = params.get("key");
+            String value = params.get("value");
+
+            if (indexStr == null || key == null || value == null) {
+                send(exchange, 400, "Parâmetros 'index', 'key' ou 'value' ausentes");
+                return;
+            }
+
+            int idx;
+            try {
+                idx = Integer.parseInt(indexStr);
+            } catch (NumberFormatException e) {
+                send(exchange, 400, "Índice inválido: " + indexStr);
+                return;
+            }
+
+            LogEntry entry = new LogEntry(idx, key, value);
+            synchronized (LOG) {
+                LOG.add(entry);
+            }
+            applyEntry(entry);
+
+            System.out.println("[Nó " + NODE_ID + "] APPEND recebido: index=" + idx +
+                    " key=" + key + " value=" + value);
+
+            send(exchange, 200, "OK APPEND index=" + idx);
+        }
+    }
+    // ---- Funções do Log Replicado no Nó ----
+
+    private static LogEntry appendToLocalLog(String key, String value) {
+        int index = LOG_INDEX_SEQ.incrementAndGet();
+        LogEntry entry = new LogEntry(index, key, value);
+        synchronized (LOG) {
+            LOG.add(entry);
+        }
+        System.out.println("[Nó " + NODE_ID + "] Log local: append index=" + index +
+                " key=" + key + " value=" + value);
+        return entry;
+    }
+
+    private static void applyEntry(LogEntry entry) {
+        // aqui estamos aplicando imediatamente; em uma implementação mais rigorosa
+        // consideraríamos ordem e majority-commit
+        STATE.put(entry.key, entry.value);
+        lastAppliedIndex = entry.index;
+        System.out.println("[Nó " + NODE_ID + "] Estado aplicado: " +
+                entry.key + "=" + entry.value + " (index=" + entry.index + ")");
+    }
+
+    private static void replicateEntryViaGateway(LogEntry entry) throws Exception {
+        // O líder não fala direto com followers.
+        // Ele apenas notifica o Gateway, que fará o fan-out para os followers.
+        String url = GATEWAY_BASE_URL
+                + "/append?index=" + entry.index
+                + "&key=" + URLEncoder.encode(entry.key, StandardCharsets.UTF_8)
+                + "&value=" + URLEncoder.encode(entry.value, StandardCharsets.UTF_8);
+
+        java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
+        java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .GET()
+                .build();
+
+        java.net.http.HttpResponse<String> response =
+                client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+
+        System.out.println("[Nó " + NODE_ID + "] replicateEntryViaGateway -> " +
+                "status=" + response.statusCode() +
+                " body=" + response.body());
     }
 
     static class QueryUtils {
