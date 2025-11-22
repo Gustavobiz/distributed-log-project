@@ -12,6 +12,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * API Gateway:
@@ -54,6 +55,8 @@ public class ApiGatewayApplication {
     static class SetProxyHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+
+            // 1) Descobre o líder ativo
             ServiceRegistry.NodeInfo leader = ServiceRegistry.getLeaderAtivo();
             if (leader == null) {
                 send(exchange, 503,
@@ -61,26 +64,64 @@ public class ApiGatewayApplication {
                         "Verifique se o nó está rodando e enviando heartbeat.");
                 return;
             }
-            System.out.println("[Gateway] Encaminhando SET para líder " + leader.id +
-        " (" + leader.baseUrl() + ")");
 
+            System.out.println("[Gateway] Encaminhando SET para líder "
+                    + leader.id + " (" + leader.baseUrl() + ")");
 
             String query = exchange.getRequestURI().getRawQuery();
-            String targetUrl = leader.baseUrl() + "/set";
+            String leaderUrl = leader.baseUrl() + "/set";
             if (query != null && !query.isEmpty()) {
-                targetUrl += "?" + query;
+                leaderUrl += "?" + query;
             }
 
             try {
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(targetUrl))
+                // 2) Envia SET ao líder
+                HttpRequest reqLeader = HttpRequest.newBuilder()
+                        .uri(URI.create(leaderUrl))
                         .GET()
                         .build();
 
-                HttpResponse<String> response =
-                        httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                HttpResponse<String> leaderResp =
+                        httpClient.send(reqLeader, HttpResponse.BodyHandlers.ofString());
 
-                send(exchange, response.statusCode(), response.body());
+                if (leaderResp.statusCode() >= 400) {
+                    send(exchange, leaderResp.statusCode(),
+                            "Falha ao gravar no líder: " + leaderResp.body());
+                    return;
+                }
+
+                // 3) Replicação mínima: tentar enviar a mesma escrita para followers ativos
+                List<ServiceRegistry.NodeInfo> followers = ServiceRegistry.getFollowersAtivos();
+                for (ServiceRegistry.NodeInfo f : followers) {
+
+                    System.out.println("[Gateway] Tentando replicar SET para follower "
+                            + f.id + " (" + f.baseUrl() + ")");
+
+                    try {
+                        String followerUrl = f.baseUrl() + "/set";
+                        if (query != null && !query.isEmpty()) {
+                            followerUrl += "?" + query;
+                        }
+
+                        HttpRequest reqFollower = HttpRequest.newBuilder()
+                                .uri(URI.create(followerUrl))
+                                .GET()
+                                .build();
+
+                        httpClient.send(reqFollower, HttpResponse.BodyHandlers.ofString());
+
+                        System.out.println("[Gateway] Replicação para follower "
+                                + f.id + " concluída (melhor esforço).");
+
+                    } catch (Exception e) {
+                        System.out.println("[Gateway] Falha ao replicar para follower "
+                                + f.id + ": " + e.getMessage());
+                    }
+                }
+
+                // 4) Responde para o cliente usando a resposta do líder
+                send(exchange, 200, leaderResp.body());
+
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 send(exchange, 500, "Erro: Thread interrompida (" + e.getMessage() + ")");

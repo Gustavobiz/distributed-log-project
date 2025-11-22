@@ -1,5 +1,7 @@
 package com.dist.gateway;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -37,8 +39,6 @@ public class ServiceRegistry {
             System.out.println("[Gateway] Nó " + id + " voltou a ficar ATIVO");
         }
         info.ativo = true;
-        // Se quiser logar todo heartbeat, descomente:
-        // System.out.println("[Gateway] Heartbeat recebido do nó " + id);
     }
 
     // Retorna um líder que esteja ativo (com heartbeat recente)
@@ -51,10 +51,20 @@ public class ServiceRegistry {
                 .orElse(null);
     }
 
-    // Por enquanto GET também vai para o líder.
-    // Depois podemos mandar para followers.
+    // Por enquanto, GET continua indo para o líder (sem pular fase)
     public static NodeInfo getNodeParaGet() {
         return getLeaderAtivo();
+    }
+
+    // Followers ativos (para replicação mínima)
+    public static List<NodeInfo> getFollowersAtivos() {
+        List<NodeInfo> followers = new ArrayList<>();
+        for (NodeInfo info : registry.values()) {
+            if (!"LEADER".equalsIgnoreCase(info.role) && isAlive(info)) {
+                followers.add(info);
+            }
+        }
+        return followers;
     }
 
     private static boolean isAlive(NodeInfo info) {
