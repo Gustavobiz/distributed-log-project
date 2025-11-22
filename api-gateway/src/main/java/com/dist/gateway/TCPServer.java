@@ -37,24 +37,36 @@ public class TCPServer implements Runnable {
         }
     }
 
-    private void handle(Socket socket) {
-        try (
-                BufferedReader reader =
-                        new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
-                BufferedWriter writer =
-                        new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8))
-        ) {
-            String line = reader.readLine();
-            if (line == null) return;
+private void handle(Socket socket) {
+    try (
+            BufferedReader reader =
+                    new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+            BufferedWriter writer =
+                    new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8))
+    ) {
+        String line;
+        while ((line = reader.readLine()) != null) {
+            if (line.trim().isEmpty()) {
+                continue; // ignora linhas em branco
+            }
+
+            // Se quiser um comando de saída:
+            if (line.trim().equalsIgnoreCase("QUIT")) {
+                writer.write("Encerrando conexão.\n");
+                writer.flush();
+                break;
+            }
 
             String resposta = processarComando(line);
             writer.write(resposta + "\n");
             writer.flush();
-
-        } catch (Exception e) {
-            System.out.println("[Gateway] Erro ao processar TCP: " + e.getMessage());
         }
+
+    } catch (Exception e) {
+        System.out.println("[Gateway] Erro ao processar TCP: " + e.getMessage());
     }
+}
+
 
     private String processarComando(String cmd) {
         try {
