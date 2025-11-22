@@ -1,4 +1,5 @@
 com/dist/gateway/ServiceRegistry$NodeInfo.class
+com/dist/gateway/UDPCommandServer.class
 com/dist/gateway/ApiGatewayApplication.class
 com/dist/gateway/ApiGatewayApplication$GetProxyHandler.class
 com/dist/gateway/TCPServer.class

@@ -24,8 +24,10 @@ public class ApiGatewayApplication {
     private static final HttpClient httpClient = HttpClient.newHttpClient();
 
     public static void main(String[] args) throws Exception {
-        int httpPort = 8080;
-        int udpPort = 8000;
+    int httpPort = 8080;
+    int udpPort = 8000;   // REGISTER/HEARTBEAT
+    int tcpPort = 9000;   // TCP cliente
+    int udpCmdPort = 9001; // UDP cliente 
 
         for (String arg : args) {
             if (arg.startsWith("--port=")) {
@@ -60,7 +62,13 @@ System.out.println("[Gateway] Monitor de nós iniciado.");
 Thread tcpThread = new Thread(new TCPServer(9000));
 tcpThread.setDaemon(true);
 tcpThread.start();
-System.out.println("[Gateway] TCP pronto na porta 9000");
+System.out.println("[Gateway] TCP pronto na porta "+ tcpPort);
+
+ // Servidor UDP de comandos (cliente)
+    Thread udpCmdThread = new Thread(new UDPCommandServer(udpCmdPort));
+    udpCmdThread.setDaemon(true);
+    udpCmdThread.start();
+    System.out.println("[Gateway] UDP de comandos pronto na porta " + udpCmdPort);
 
 
     }
