@@ -1,6 +1,7 @@
 com/dist/gateway/ServiceRegistry$NodeInfo.class
 com/dist/gateway/ApiGatewayApplication.class
 com/dist/gateway/ApiGatewayApplication$GetProxyHandler.class
+com/dist/gateway/TCPServer.class
 com/dist/gateway/ServiceRegistry.class
 com/dist/gateway/ApiGatewayApplication$RegistryMonitor.class
 com/dist/gateway/ApiGatewayApplication$SetProxyHandler.class

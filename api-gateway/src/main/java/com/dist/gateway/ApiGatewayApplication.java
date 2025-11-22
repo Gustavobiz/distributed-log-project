@@ -56,6 +56,13 @@ monitor.setDaemon(true);
 monitor.start();
 System.out.println("[Gateway] Monitor de nós iniciado.");
 
+// Inicia servidor TCP
+Thread tcpThread = new Thread(new TCPServer(9000));
+tcpThread.setDaemon(true);
+tcpThread.start();
+System.out.println("[Gateway] TCP pronto na porta 9000");
+
+
     }
 
     // Handler para /set

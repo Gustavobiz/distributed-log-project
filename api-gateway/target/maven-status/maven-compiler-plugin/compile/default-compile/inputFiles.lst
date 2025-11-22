@@ -1,3 +1,4 @@
 /home/gustavo/Imagens/distributed-log-project/api-gateway/src/main/java/com/dist/gateway/UDPRegisterServer.java
 /home/gustavo/Imagens/distributed-log-project/api-gateway/src/main/java/com/dist/gateway/ServiceRegistry.java
 /home/gustavo/Imagens/distributed-log-project/api-gateway/src/main/java/com/dist/gateway/ApiGatewayApplication.java
+/home/gustavo/Imagens/distributed-log-project/api-gateway/src/main/java/com/dist/gateway/TCPServer.java
