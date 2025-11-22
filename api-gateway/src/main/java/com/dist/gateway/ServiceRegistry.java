@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Registro de nós (Leader / Followers) no Gateway.
@@ -11,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *  - registro inicial (REGISTER)
  *  - heartbeat
  *  - nós ativos / inativos
+ *  - escolha de nó para GET (round-robin)
  */
 public class ServiceRegistry {
 
@@ -18,6 +20,9 @@ public class ServiceRegistry {
 
     // Tempo máximo sem heartbeat antes de considerar o nó morto (ms)
     private static final long HEARTBEAT_TIMEOUT_MS = 5000;
+
+    // Índice para round-robin de GET
+    private static final AtomicInteger rrIndex = new AtomicInteger(0);
 
     public static void registerNode(String id, String ip, int port, String role) {
         NodeInfo info = new NodeInfo(id, ip, port, role);
@@ -51,12 +56,7 @@ public class ServiceRegistry {
                 .orElse(null);
     }
 
-    // Por enquanto, GET continua indo para o líder (sem pular fase)
-    public static NodeInfo getNodeParaGet() {
-        return getLeaderAtivo();
-    }
-
-    // Followers ativos (para replicação mínima)
+    // Followers ativos (para replicação mínima do SET)
     public static List<NodeInfo> getFollowersAtivos() {
         List<NodeInfo> followers = new ArrayList<>();
         for (NodeInfo info : registry.values()) {
@@ -67,6 +67,28 @@ public class ServiceRegistry {
         return followers;
     }
 
+    // Lista de nós ativos para GET (líder + followers)
+    public static List<NodeInfo> getNosAtivosParaGet() {
+        List<NodeInfo> ativos = new ArrayList<>();
+        for (NodeInfo info : registry.values()) {
+            if (isAlive(info)) {
+                ativos.add(info);
+            }
+        }
+        return ativos;
+    }
+
+    // Escolhe nó para GET em round-robin entre todos os ativos
+    public static NodeInfo getNodeParaGet() {
+        List<NodeInfo> ativos = getNosAtivosParaGet();
+        if (ativos.isEmpty()) {
+            return null;
+        }
+        int idx = Math.floorMod(rrIndex.getAndIncrement(), ativos.size());
+        return ativos.get(idx);
+    }
+
+    // Verifica se nó está "vivo" e atualiza flag ativo
     private static boolean isAlive(NodeInfo info) {
         long agora = System.currentTimeMillis();
         long delta = agora - info.lastHeartbeatMillis;
